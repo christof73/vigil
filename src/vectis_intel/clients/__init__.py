@@ -12,12 +12,26 @@ from .sam_gov import (
     SamSearchResult,
     SamPointOfContact,
 )
+from .usaspending import (
+    USAspendingClient,
+    USAspendingError,
+    AwardSummary,
+    AwardDetail,
+    SearchResult as AwardSearchResult,
+)
 
 __all__ = [
+    # SAM.gov
     "SamGovClient",
     "SamGovError",
     "SamOpportunity",
     "SamOpportunityDetail",
     "SamSearchResult",
     "SamPointOfContact",
+    # USAspending
+    "USAspendingClient",
+    "USAspendingError",
+    "AwardSummary",
+    "AwardDetail",
+    "AwardSearchResult",
 ]

@@ -28,6 +28,8 @@ class TestServerTools:
             "ping",
             "scan_opportunities",
             "get_opportunity_detail",
+            "scan_awards",
+            "search_competitor_awards",
             "list_signals",
             "trace_evidence",
             "list_stale_signals",

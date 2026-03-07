@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Optional
 
 from ..clients.sam_gov import SamOpportunity, SamOpportunityDetail
+from ..clients.usaspending import AwardSummary, AwardDetail
 from ..store import (
     Source, Signal, SignalSource,
     SourceType, CollectionMethod, SignalType, Confidence, SourceRelevance,
@@ -342,6 +343,200 @@ class ProcurementAgent:
                     existing_urls.add(result.source.url)
 
         logger.info(f"Extracted {extracted} signals, skipped {skipped}")
+        return results, extracted, skipped
+
+    # ─── USASPENDING AWARD EXTRACTION ─────────────────────────────────────────
+
+    def _build_award_summary(self, award: AwardSummary) -> str:
+        """
+        Build factual summary for award signal.
+
+        Template: "{recipient} awarded ${amount} contract by {agency}
+                   for '{description}' (Award# {awardId}), NAICS {naics}."
+        """
+        recipient = award.recipient_name or "Unknown contractor"
+        amount = award.award_amount or 0
+
+        # Format amount
+        if amount >= 1_000_000:
+            amount_str = f"${amount / 1_000_000:.1f}M"
+        elif amount >= 1_000:
+            amount_str = f"${amount / 1_000:.0f}K"
+        else:
+            amount_str = f"${amount:,.2f}"
+
+        agency = self._normalize_agency(award.awarding_agency) or "Unknown agency"
+
+        parts = [f"{recipient} awarded {amount_str} contract by {agency}"]
+
+        # Description (truncate if too long)
+        if award.description:
+            desc = award.description
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            parts.append(f"for '{desc}'")
+
+        # Award ID
+        if award.award_id:
+            parts.append(f"(Award# {award.award_id})")
+
+        # NAICS
+        if award.naics_code:
+            parts.append(f", NAICS {award.naics_code}")
+
+        # Start date
+        if award.start_date:
+            parts.append(f", effective {award.start_date}")
+
+        return " ".join(parts) + "."
+
+    def extract_from_award(
+        self,
+        award: AwardSummary,
+        existing_urls: Optional[set[str]] = None,
+    ) -> ExtractionResult:
+        """
+        Transform a USAspending award into Source + Signal + SignalSource.
+
+        Args:
+            award: AwardSummary from the USAspending client
+            existing_urls: Set of URLs already in the database (for deduplication)
+
+        Returns:
+            ExtractionResult with source, signal, and signal_source objects.
+            Check result.skipped to see if this was a duplicate.
+        """
+        # Get the source URL
+        source_url = award.usaspending_url
+        if not source_url or "None" in source_url:
+            return ExtractionResult(
+                source=None,
+                signal=None,
+                signal_source=None,
+                domain_tags=[],
+                entity_refs=[],
+                skipped=True,
+                skip_reason="No source URL available",
+            )
+
+        # Deduplication check
+        if existing_urls and source_url in existing_urls:
+            return ExtractionResult(
+                source=None,
+                signal=None,
+                signal_source=None,
+                domain_tags=[],
+                entity_refs=[],
+                skipped=True,
+                skip_reason=f"Source URL already exists: {source_url}",
+            )
+
+        # Infer domain tags from description
+        domain_tags = self.infer_domain_tags(
+            award.description or "",
+            None
+        )
+
+        # Build entity references
+        entity_refs = []
+        if award.awarding_agency:
+            agency_ref = self._agency_to_ref(award.awarding_agency)
+            if agency_ref:
+                entity_refs.append(agency_ref)
+
+        # Add recipient as entity ref (normalized)
+        if award.recipient_name:
+            recipient_ref = re.sub(r"[^a-z0-9]+", "_", award.recipient_name.lower())
+            recipient_ref = re.sub(r"_+", "_", recipient_ref).strip("_")
+            if recipient_ref:
+                entity_refs.append(f"contractor_{recipient_ref}")
+
+        # Add NAICS-based tags
+        if award.naics_code:
+            entity_refs.append(f"naics_{award.naics_code}")
+
+        # Create Source
+        source = Source(
+            source_type=SourceType.CONTRACT_AWARD,
+            title=award.description[:200] if award.description else f"Award {award.award_id}",
+            url=source_url,
+            publisher="USAspending.gov",
+            published_at=award.start_date,
+            collection_method=CollectionMethod.API_AUTOMATED,
+            collector_agent="procurement_scanner",
+        )
+
+        # All USAspending awards are verified (authoritative source)
+        confidence = Confidence.VERIFIED
+        confidence_rationale = f"Direct USAspending.gov record"
+        if award.award_id:
+            confidence_rationale += f": {award.award_id}"
+
+        # Build summary
+        summary = self._build_award_summary(award)
+
+        # Create Signal (awards don't expire)
+        signal = Signal(
+            signal_type=SignalType.CONTRACT_AWARDED,
+            summary=summary,
+            entity_refs=json.dumps(entity_refs) if entity_refs else None,
+            domain_tags=json.dumps(domain_tags) if domain_tags else None,
+            confidence=confidence,
+            confidence_rationale=confidence_rationale,
+            extracted_by="procurement_scanner",
+            expires_at=None,  # Awards don't expire
+        )
+
+        # Create SignalSource link
+        signal_source = SignalSource(
+            signal_id=signal.signal_id,
+            source_id=source.source_id,
+            relevance=SourceRelevance.PRIMARY,
+            excerpt=award.description[:200] if award.description else None,
+        )
+
+        return ExtractionResult(
+            source=source,
+            signal=signal,
+            signal_source=signal_source,
+            domain_tags=domain_tags,
+            entity_refs=entity_refs,
+            skipped=False,
+        )
+
+    def extract_awards_batch(
+        self,
+        awards: list[AwardSummary],
+        existing_urls: Optional[set[str]] = None,
+    ) -> tuple[list[ExtractionResult], int, int]:
+        """
+        Extract signals from a batch of awards.
+
+        Args:
+            awards: List of AwardSummary objects
+            existing_urls: Set of URLs already in database
+
+        Returns:
+            Tuple of (results, extracted_count, skipped_count)
+        """
+        results = []
+        extracted = 0
+        skipped = 0
+
+        for award in awards:
+            result = self.extract_from_award(award, existing_urls)
+            results.append(result)
+
+            if result.skipped:
+                skipped += 1
+                logger.debug(f"Skipped award: {result.skip_reason}")
+            else:
+                extracted += 1
+                # Add to existing_urls to prevent duplicates within batch
+                if existing_urls is not None and result.source:
+                    existing_urls.add(result.source.url)
+
+        logger.info(f"Extracted {extracted} award signals, skipped {skipped}")
         return results, extracted, skipped
 
 

@@ -18,6 +18,7 @@ from mcp.types import Tool, TextContent
 
 from .store import IntelStore
 from .clients.sam_gov import SamGovClient, SamGovError
+from .clients.usaspending import USAspendingClient, USAspendingError
 from .agents.procurement import ProcurementAgent, load_watchlist
 
 # Configure logging
@@ -120,6 +121,67 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": []
+            }
+        ),
+
+        # ─── AWARD SCANNING (USAspending) ─────────────────────────────────
+        Tool(
+            name="scan_awards",
+            description="Search USAspending.gov for recent contract awards matching watchlist criteria. Creates Source + Signal records for each new award found.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "awarded_within_days": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": "Look back N days from today"
+                    },
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Override watchlist keywords (e.g., ['ServiceNow', 'GRC'])"
+                    },
+                    "naics_codes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Override watchlist NAICS codes (e.g., ['541512'])"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Maximum awards to fetch"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="search_competitor_awards",
+            description="Search USAspending.gov for awards to a specific competitor/contractor. Creates Source + Signal records for each award found.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "competitor_name": {
+                        "type": "string",
+                        "description": "Contractor name to search (e.g., 'Deloitte Consulting')"
+                    },
+                    "naics_codes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by NAICS codes (e.g., ['541512'])"
+                    },
+                    "awarded_within_days": {
+                        "type": "integer",
+                        "default": 365,
+                        "description": "Look back N days (default: 1 year)"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Maximum awards to fetch"
+                    }
+                },
+                "required": ["competitor_name"]
             }
         ),
 
@@ -237,6 +299,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await handle_scan_opportunities(arguments)
         elif name == "get_opportunity_detail":
             return await handle_get_opportunity_detail(arguments)
+
+        # Award Scanning (USAspending)
+        elif name == "scan_awards":
+            return await handle_scan_awards(arguments)
+        elif name == "search_competitor_awards":
+            return await handle_search_competitor_awards(arguments)
 
         # Intel Store Queries
         elif name == "list_signals":
@@ -447,6 +515,191 @@ async def handle_get_opportunity_detail(args: dict) -> list[TextContent]:
     }
 
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+# ─── AWARD SCANNING HANDLERS (USAspending) ───────────────────────────────────
+
+async def handle_scan_awards(args: dict) -> list[TextContent]:
+    """
+    Scan USAspending.gov for contract awards and create signals.
+
+    Flow: USAspendingClient → ProcurementAgent → IntelStore
+    """
+    store = get_store()
+    watchlist = get_watchlist()
+
+    # Parse arguments
+    awarded_within_days = args.get("awarded_within_days", 30)
+    max_results = args.get("max_results", 50)
+    keywords = args.get("keywords")
+    naics_codes = args.get("naics_codes")
+
+    # Build search parameters
+    if keywords or naics_codes:
+        # Override watchlist with provided values
+        search_watchlist = {
+            "keywords": {"custom": keywords} if keywords else {},
+            "naics_codes": {
+                "primary": naics_codes or [],
+                "secondary": []
+            }
+        }
+    else:
+        search_watchlist = watchlist
+
+    # Get existing source URLs for deduplication
+    existing_sources = store.sources.list_by_type("contract_award", limit=1000)
+    existing_urls = {s["url"] for s in existing_sources if s.get("url")}
+    logger.info(f"Found {len(existing_urls)} existing award URLs for deduplication")
+
+    # Search USAspending
+    try:
+        async with USAspendingClient() as client:
+            awards = await client.search_by_watchlist(
+                watchlist=search_watchlist,
+                awarded_within_days=awarded_within_days,
+                max_per_keyword=max_results,
+            )
+    except USAspendingError as e:
+        return [TextContent(type="text", text=json.dumps({
+            "error": f"USAspending API error: {str(e)}",
+            "status_code": getattr(e, "status_code", None)
+        }, indent=2))]
+
+    logger.info(f"USAspending returned {len(awards)} awards")
+
+    # Extract signals
+    agent = ProcurementAgent(watchlist)
+    results, extracted, skipped = agent.extract_awards_batch(
+        awards,
+        existing_urls=existing_urls
+    )
+
+    # Store new signals
+    created_signals = []
+    for result in results:
+        if not result.skipped:
+            try:
+                store.sources.create(result.source)
+                signal = store.signals.create(result.signal, [result.signal_source])
+                created_signals.append({
+                    "signal_id": signal.signal_id,
+                    "summary": signal.summary[:100] + "..." if len(signal.summary) > 100 else signal.summary,
+                    "domain_tags": result.domain_tags,
+                })
+            except Exception as e:
+                logger.error(f"Failed to store award signal: {e}")
+                skipped += 1
+                extracted -= 1
+
+    # Build response
+    response = {
+        "scan_completed": datetime.now(timezone.utc).isoformat(),
+        "parameters": {
+            "awarded_within_days": awarded_within_days,
+            "keywords": keywords or "watchlist",
+            "naics_codes": naics_codes or "watchlist",
+        },
+        "results": {
+            "awards_found": len(awards),
+            "signals_created": extracted,
+            "duplicates_skipped": skipped,
+        },
+        "signals": created_signals
+    }
+
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
+
+
+async def handle_search_competitor_awards(args: dict) -> list[TextContent]:
+    """
+    Search USAspending.gov for awards to a specific competitor.
+
+    Creates Source + Signal records for each award found.
+    """
+    store = get_store()
+    watchlist = get_watchlist()
+
+    # Parse arguments
+    competitor_name = args.get("competitor_name")
+    if not competitor_name:
+        return [TextContent(type="text", text=json.dumps({
+            "error": "competitor_name is required"
+        }, indent=2))]
+
+    naics_codes = args.get("naics_codes")
+    awarded_within_days = args.get("awarded_within_days", 365)
+    max_results = args.get("max_results", 50)
+
+    # Get existing source URLs for deduplication
+    existing_sources = store.sources.list_by_type("contract_award", limit=1000)
+    existing_urls = {s["url"] for s in existing_sources if s.get("url")}
+
+    # Search USAspending for this competitor
+    try:
+        async with USAspendingClient() as client:
+            awards = await client.search_by_recipient(
+                recipient_name=competitor_name,
+                naics_codes=naics_codes,
+                awarded_within_days=awarded_within_days,
+                max_results=max_results,
+            )
+    except USAspendingError as e:
+        return [TextContent(type="text", text=json.dumps({
+            "error": f"USAspending API error: {str(e)}",
+            "status_code": getattr(e, "status_code", None)
+        }, indent=2))]
+
+    logger.info(f"Found {len(awards)} awards for competitor: {competitor_name}")
+
+    # Extract signals
+    agent = ProcurementAgent(watchlist)
+    results, extracted, skipped = agent.extract_awards_batch(
+        awards,
+        existing_urls=existing_urls
+    )
+
+    # Store new signals
+    created_signals = []
+    total_value = 0
+
+    for result in results:
+        if not result.skipped:
+            try:
+                store.sources.create(result.source)
+                signal = store.signals.create(result.signal, [result.signal_source])
+                created_signals.append({
+                    "signal_id": signal.signal_id,
+                    "summary": signal.summary[:100] + "..." if len(signal.summary) > 100 else signal.summary,
+                })
+            except Exception as e:
+                logger.error(f"Failed to store competitor award signal: {e}")
+                skipped += 1
+                extracted -= 1
+
+    # Calculate total value from awards
+    for award in awards:
+        total_value += award.award_amount or 0
+
+    # Build response
+    response = {
+        "scan_completed": datetime.now(timezone.utc).isoformat(),
+        "competitor": competitor_name,
+        "parameters": {
+            "awarded_within_days": awarded_within_days,
+            "naics_codes": naics_codes or "all",
+        },
+        "results": {
+            "awards_found": len(awards),
+            "signals_created": extracted,
+            "duplicates_skipped": skipped,
+            "total_award_value": total_value,
+            "total_award_value_formatted": f"${total_value:,.2f}",
+        },
+        "signals": created_signals
+    }
+
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
 
 
 # ─── INTEL STORE QUERY HANDLERS ──────────────────────────────────────────────

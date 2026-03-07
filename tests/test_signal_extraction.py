@@ -342,3 +342,146 @@ class TestEntityRefs:
         refs = json.loads(result.signal.entity_refs)
         assert isinstance(refs, list)
         assert "treasury" in refs
+
+
+# ─── AWARD EXTRACTION TESTS (USAspending) ───────────────────────────────────
+
+from vectis_intel.clients.usaspending import AwardSummary
+
+
+# Sample USAspending award data (distinct from SAM.gov SAMPLE_AWARD above)
+USASPENDING_AWARD = AwardSummary(
+    award_id="70B03C22F00001234",
+    recipient_name="DELOITTE CONSULTING LLP",
+    award_amount=4500000.00,
+    awarding_agency="Department of the Treasury",
+    start_date="2025-06-01",
+    naics_code="541512",
+    description="ServiceNow GRC implementation and FISMA compliance services",
+    award_type="Definitive Contract",
+    generated_internal_id="CONT_AWD_12345",
+)
+
+USASPENDING_AWARD_MINIMAL = AwardSummary(
+    award_id="TEST123",
+    recipient_name="TEST CORP",
+    award_amount=100000,
+    awarding_agency="Unknown Agency",
+    generated_internal_id="CONT_AWD_TEST",
+)
+
+
+class TestAwardExtraction:
+    """Tests for extracting signals from USAspending awards."""
+
+    def test_extract_full_award(self):
+        """Test extraction from a complete award."""
+        agent = ProcurementAgent(SAMPLE_WATCHLIST)
+        result = agent.extract_from_award(USASPENDING_AWARD)
+
+        assert not result.skipped
+        assert result.source is not None
+        assert result.signal is not None
+        assert result.signal_source is not None
+
+        # Check source
+        assert result.source.source_type == SourceType.CONTRACT_AWARD
+        assert result.source.publisher == "USAspending.gov"
+        assert "usaspending.gov/award/CONT_AWD_12345" in result.source.url
+
+        # Check signal
+        assert result.signal.signal_type == SignalType.CONTRACT_AWARDED
+        assert result.signal.confidence == Confidence.VERIFIED
+        assert "DELOITTE" in result.signal.summary
+        assert "$4.5M" in result.signal.summary
+
+        # Check domain tags (ServiceNow, GRC, FISMA should match)
+        assert "servicenow" in result.domain_tags
+        assert "grc" in result.domain_tags
+
+        # Check entity refs
+        assert "treasury" in result.entity_refs
+        assert "naics_541512" in result.entity_refs
+        # Contractor ref should be present
+        assert any("deloitte" in ref for ref in result.entity_refs)
+
+    def test_extract_minimal_award(self):
+        """Test extraction from minimal award data."""
+        agent = ProcurementAgent()
+        result = agent.extract_from_award(USASPENDING_AWARD_MINIMAL)
+
+        assert not result.skipped
+        assert result.source is not None
+        assert result.signal is not None
+
+        # Should still create a valid signal
+        assert "TEST CORP" in result.signal.summary
+        assert "$100" in result.signal.summary  # $100K or similar
+
+    def test_award_has_no_expiration(self):
+        """Test that award signals don't expire."""
+        agent = ProcurementAgent()
+        result = agent.extract_from_award(USASPENDING_AWARD)
+
+        assert result.signal.expires_at is None
+
+    def test_award_deduplication(self):
+        """Test that duplicate award URLs are skipped."""
+        agent = ProcurementAgent()
+        existing_urls = {"https://www.usaspending.gov/award/CONT_AWD_12345"}
+
+        result = agent.extract_from_award(USASPENDING_AWARD, existing_urls=existing_urls)
+
+        assert result.skipped
+        assert "already exists" in result.skip_reason
+
+    def test_award_summary_format(self):
+        """Test award summary follows expected format."""
+        agent = ProcurementAgent()
+        result = agent.extract_from_award(USASPENDING_AWARD)
+
+        summary = result.signal.summary
+        # Should include: recipient, amount, agency, description, award ID, NAICS
+        assert "DELOITTE" in summary
+        assert "Treasury" in summary
+        assert "Award#" in summary
+        assert "NAICS 541512" in summary
+
+
+class TestAwardBatchExtraction:
+    """Tests for batch award extraction."""
+
+    def test_extract_awards_batch(self):
+        """Test extracting multiple awards."""
+        agent = ProcurementAgent(SAMPLE_WATCHLIST)
+        awards = [USASPENDING_AWARD, USASPENDING_AWARD_MINIMAL]
+
+        results, extracted, skipped = agent.extract_awards_batch(awards)
+
+        assert len(results) == 2
+        assert extracted == 2
+        assert skipped == 0
+
+    def test_batch_deduplication_within_batch(self):
+        """Test that duplicate awards are skipped within batch."""
+        agent = ProcurementAgent()
+        # Same award twice
+        awards = [USASPENDING_AWARD, USASPENDING_AWARD]
+
+        results, extracted, skipped = agent.extract_awards_batch(awards, existing_urls=set())
+
+        assert extracted == 1
+        assert skipped == 1
+
+    def test_batch_with_existing_urls(self):
+        """Test batch extraction skips existing URLs."""
+        agent = ProcurementAgent()
+        existing = {"https://www.usaspending.gov/award/CONT_AWD_12345"}
+
+        results, extracted, skipped = agent.extract_awards_batch(
+            [USASPENDING_AWARD, USASPENDING_AWARD_MINIMAL],
+            existing_urls=existing
+        )
+
+        assert extracted == 1  # Only USASPENDING_AWARD_MINIMAL
+        assert skipped == 1  # USASPENDING_AWARD skipped
