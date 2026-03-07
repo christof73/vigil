@@ -1,0 +1,29 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-03-07",
+  "naics_codes": {
+    "primary": ["541512", "541511"],
+    "secondary": ["541519", "518210", "541611", "541690"]
+  },
+  "keywords": {
+    "servicenow": ["ServiceNow", "service-now", "SNOW platform"],
+    "grc": ["GRC", "governance risk compliance", "risk management framework", "integrated risk management", "IRM"],
+    "fisma": ["FISMA", "NIST 800-53", "NIST SP 800-53", "security controls", "control assessment"],
+    "fedramp": ["FedRAMP", "cloud authorization", "authority to operate", "ATO"],
+    "itsm": ["IT service management", "ITSM modernization", "incident management platform"],
+    "automation": ["workflow automation", "process automation", "low-code platform"],
+    "ai_innovation": ["AI agent", "agentic AI", "MCP server", "model context protocol", "AI-powered automation", "intelligent automation"]
+  },
+  "competitors": {
+    "large_primes": ["Deloitte Consulting", "Booz Allen Hamilton", "Accenture Federal", "KPMG"],
+    "servicenow_partners": ["Thirdera", "Cask", "Infocenter", "GlideFast Consulting", "Crossfuze"]
+  },
+  "agencies_of_interest": [
+    "Department of the Treasury",
+    "Department of Homeland Security",
+    "Department of Defense",
+    "General Services Administration",
+    "Environmental Protection Agency",
+    "Department of Energy"
+  ]
+}
