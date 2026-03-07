@@ -26,6 +26,7 @@ class TestServerTools:
 
         expected_tools = {
             "ping",
+            "reload_watchlist",
             "scan_opportunities",
             "get_opportunity_detail",
             "scan_awards",

@@ -8,7 +8,6 @@ Run with: python -m vectis_intel.server
 
 import os
 import json
-import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -19,26 +18,30 @@ from mcp.types import Tool, TextContent
 from .store import IntelStore
 from .clients.sam_gov import SamGovClient, SamGovError
 from .clients.usaspending import USAspendingClient, USAspendingError
-from .agents.procurement import ProcurementAgent, load_watchlist
-
-# Configure logging
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+from .agents.procurement import ProcurementAgent
+from .config import (
+    setup_logging,
+    WatchlistManager,
+    get_env,
+    get_env_bool,
 )
-logger = logging.getLogger("vectis_intel")
 
 # Environment configuration
-INTEL_DB_PATH = os.getenv("INTEL_DB_PATH", "./data/vectis_intel.db")
-WATCHLIST_PATH = os.getenv("WATCHLIST_PATH", "./config/watchlists.json")
-SAM_GOV_API_KEY = os.getenv("SAM_GOV_API_KEY", "")
+INTEL_DB_PATH = get_env("INTEL_DB_PATH", "./data/vectis_intel.db")
+WATCHLIST_PATH = get_env("WATCHLIST_PATH", "./config/watchlists.json")
+SAM_GOV_API_KEY = get_env("SAM_GOV_API_KEY", "")
+LOG_LEVEL = get_env("LOG_LEVEL", "INFO")
+LOG_JSON = get_env_bool("LOG_JSON", False)
+
+# Configure logging
+logger = setup_logging(level=LOG_LEVEL, json_format=LOG_JSON)
 
 # Initialize MCP server
 server = Server("vectis-intel")
 
 # Global instances (initialized on startup)
 _store: IntelStore | None = None
-_watchlist: dict | None = None
+_watchlist_manager: WatchlistManager | None = None
 
 
 def get_store() -> IntelStore:
@@ -50,13 +53,17 @@ def get_store() -> IntelStore:
     return _store
 
 
+def get_watchlist_manager() -> WatchlistManager:
+    """Get or create the WatchlistManager instance."""
+    global _watchlist_manager
+    if _watchlist_manager is None:
+        _watchlist_manager = WatchlistManager(WATCHLIST_PATH)
+    return _watchlist_manager
+
+
 def get_watchlist() -> dict:
-    """Get or load the watchlist configuration."""
-    global _watchlist
-    if _watchlist is None:
-        _watchlist = load_watchlist(WATCHLIST_PATH)
-        logger.info(f"Loaded watchlist from {WATCHLIST_PATH}")
-    return _watchlist
+    """Get the current watchlist (with hot-reload check)."""
+    return get_watchlist_manager().get()
 
 
 @server.list_tools()
@@ -67,6 +74,15 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="ping",
             description="Health check - verify the MCP server is running and database is accessible.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="reload_watchlist",
+            description="Force reload the watchlist configuration from disk. Use after editing watchlists.json.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -293,6 +309,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # Health & Status
         if name == "ping":
             return await handle_ping()
+        elif name == "reload_watchlist":
+            return await handle_reload_watchlist()
 
         # Procurement Scanning
         elif name == "scan_opportunities":
@@ -335,6 +353,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 async def handle_ping() -> list[TextContent]:
     """Health check - verify server and database."""
     store = get_store()
+    watchlist_mgr = get_watchlist_manager()
 
     # Check database
     try:
@@ -346,9 +365,8 @@ async def handle_ping() -> list[TextContent]:
     # Check API key
     api_key_status = "configured" if SAM_GOV_API_KEY else "missing"
 
-    # Check watchlist
-    watchlist = get_watchlist()
-    watchlist_status = f"{len(watchlist.get('keywords', {}))} keyword categories"
+    # Get watchlist stats
+    watchlist_stats = watchlist_mgr.get_stats()
 
     result = {
         "status": "ok",
@@ -357,9 +375,56 @@ async def handle_ping() -> list[TextContent]:
         "database": db_status,
         "db_path": INTEL_DB_PATH,
         "sam_api_key": api_key_status,
-        "watchlist": watchlist_status,
+        "watchlist": {
+            "keyword_categories": watchlist_stats["keyword_categories"],
+            "total_keywords": watchlist_stats["total_keywords"],
+            "naics_codes": watchlist_stats["naics_primary"] + watchlist_stats["naics_secondary"],
+            "last_modified": watchlist_stats["last_modified"],
+        },
+        "logging": {
+            "level": LOG_LEVEL,
+            "json_format": LOG_JSON,
+        },
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+async def handle_reload_watchlist() -> list[TextContent]:
+    """Force reload the watchlist configuration."""
+    watchlist_mgr = get_watchlist_manager()
+
+    # Get stats before reload
+    old_stats = watchlist_mgr.get_stats()
+
+    # Force reload
+    watchlist_mgr.reload()
+
+    # Get stats after reload
+    new_stats = watchlist_mgr.get_stats()
+
+    result = {
+        "reloaded": True,
+        "path": new_stats["path"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "stats": {
+            "keyword_categories": new_stats["keyword_categories"],
+            "total_keywords": new_stats["total_keywords"],
+            "naics_primary": new_stats["naics_primary"],
+            "naics_secondary": new_stats["naics_secondary"],
+        },
+        "changes": {
+            "keywords_changed": old_stats["total_keywords"] != new_stats["total_keywords"],
+            "old_total_keywords": old_stats["total_keywords"],
+            "new_total_keywords": new_stats["total_keywords"],
+        }
+    }
+
+    logger.info(
+        "Watchlist reloaded",
+        extra={"old_keywords": old_stats["total_keywords"], "new_keywords": new_stats["total_keywords"]}
+    )
+
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
