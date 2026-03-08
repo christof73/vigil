@@ -397,7 +397,7 @@ class USAspendingClient:
             filters["keywords"] = keywords
 
         if naics_codes:
-            filters["naics_codes"] = [{"require": naics_codes}]
+            filters["naics_codes"] = naics_codes
 
         if recipient_name:
             filters["recipient_search_text"] = [recipient_name]
