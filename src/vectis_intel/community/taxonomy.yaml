@@ -1,0 +1,119 @@
+# Community Scanner taxonomy — v1
+# Deterministic keyword classification. No embeddings in v1 by design:
+# you know this domain; a hand-built map is debuggable and honest about
+# what it knows. The `uncategorized` pile is itself a signal — review it
+# monthly. If it grows past ~20% of ingested threads, that's the trigger
+# to evaluate embeddings for v2, not before.
+#
+# Matching rule (implement in classifier):
+#   - case-insensitive substring match against title + body
+#   - a thread matches a cluster if >= min_keyword_hits keywords match
+#   - ties broken by hit count; still tied -> first cluster wins, log the tie
+#   - zero matches -> cluster_id NULL (uncategorized)
+
+config:
+  min_keyword_hits: 2
+  large_code_block_lines: 30        # threshold for has_large_code_block
+  window_months: 12
+  commercial_keywords:              # counted into commercial_hits at ingest
+    - consultant
+    - "quoted us"
+    - quote
+    - licensing cost
+    - licensed
+    - "hours per week"
+    - "hours every"
+    - partner charges
+    - statement of work
+    - "paid solution"
+  scoring_weights:                  # composite = weighted sum, then × lane_weight
+    thread_count_norm: 0.30         # normalized against max cluster in window
+    unsolved_rate:     0.20
+    workaround_rate:   0.20
+    commercial_rate:   0.15
+    store_gap_score:   0.15         # treat NULL as 0.5 (unknown), never as 1.0
+
+lanes:
+  grc:              { weight: 1.5 }
+  platform_utility: { weight: 1.0 }
+  itsm:             { weight: 0.3 }
+  other:            { weight: 0.5 }
+
+clusters:
+  # ── GRC lane ──────────────────────────────────────────────
+  - slug: grc_evidence_collection
+    label: GRC Evidence Collection & Requests
+    lane: grc
+    keywords: [evidence request, evidence collection, attestation, control attestation, evidence task, sn_grc_evidence]
+
+  - slug: grc_control_testing
+    label: Control Test Management
+    lane: grc
+    keywords: [control test, test plan, control assessment, indicator, continuous monitoring, sn_compliance]
+
+  - slug: grc_audit_engagement
+    label: Audit Engagement Workflow
+    lane: grc
+    keywords: [audit engagement, sn_audit, audit task, audit finding, engagement workspace, fieldwork]
+
+  - slug: grc_entity_scoping
+    label: Entity & Profile Scoping
+    lane: grc
+    keywords: [entity type, entity filter, profile class, entity scoping, grc profile, control inheritance]
+
+  - slug: grc_migration
+    label: GRC Cross-Instance Migration
+    lane: grc
+    keywords: [grc migration, migrate controls, migrate policies, reference remap, grc update set, instance to instance grc]
+
+  - slug: grc_reporting
+    label: GRC Reporting & Dashboards
+    lane: grc
+    keywords: [grc report, compliance dashboard, posture report, control status report, audit readiness]
+
+  - slug: oscal_fedramp
+    label: OSCAL / FedRAMP Machine-Readable
+    lane: grc
+    keywords: [oscal, ssp export, fedramp package, machine readable, 800-53 export, component definition]
+
+  # ── Platform utility lane ─────────────────────────────────
+  - slug: clone_management
+    label: Clone Exclusions & Data Preservation
+    lane: platform_utility
+    keywords: [clone exclusion, data preservation, clone target, preserve data, post-clone, clone profile]
+
+  - slug: update_set_lifecycle
+    label: Update Set Promotion & Dependencies
+    lane: platform_utility
+    keywords: [update set, skipped updates, missing dependency, batch update set, collision, retrieved update set, preview errors]
+
+  - slug: deployment_validation
+    label: Pre-Deployment Validation
+    lane: platform_utility
+    keywords: [broken reference, orphaned record, missing role, pre-deployment check, instance scan, health scan]
+
+  - slug: acl_debugging
+    label: ACL & Access Control Debugging
+    lane: platform_utility
+    keywords: [acl, access denied, security rule, read access, admin overrides, security_admin, debug security]
+
+  - slug: data_isolation
+    label: Multi-Org Data Isolation
+    lane: platform_utility
+    keywords: [query business rule, before query, data separation, domain separation alternative, data isolation, multi-tenant]
+
+  - slug: import_transform
+    label: Import Sets & Transform Maps
+    lane: platform_utility
+    keywords: [transform map, import set, coalesce, transform script, onBefore, staging table, field mapping]
+
+  - slug: scoped_app_gotchas
+    label: Scoped App Development Quirks
+    lane: platform_utility
+    keywords: [scoped application, cross-scope, application scope, scope access, x_ prefix, restricted caller access]
+
+  # ── ITSM lane (deliberately low weight — saturated) ───────
+  - slug: itsm_workflow
+    label: ITSM Workflow & SLA
+    lane: itsm
+    keywords: [incident workflow, sla definition, assignment rule, catalog item, request workflow, approval workflow]
