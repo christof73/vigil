@@ -37,6 +37,12 @@ class TestServerTools:
             "integrity_audit",
             "agent_trust_report",
             "pipeline_summary",
+            "community_ingest",
+            "community_score",
+            "community_digest",
+            "community_promote",
+            "community_status",
+            "sync_taxonomy",
         }
 
         assert tool_names == expected_tools

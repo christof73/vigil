@@ -25,10 +25,20 @@ from .config import (
     get_env,
     get_env_bool,
 )
+from .community.schema import apply_community_schema
+from .community.config import TaxonomyManager
+from .community.sync_taxonomy import sync_taxonomy
+from .community.score import score_clusters
+from .community.digest import generate_digest
+from .community.promote import promote_cluster, audit_promotions, PromotionError
+from .community.ingest.sn_community import SNCommunityIngester
+from .community.ingest.reddit import RedditIngester
+from .community.ingest.stackoverflow import StackOverflowIngester
 
 # Environment configuration
 INTEL_DB_PATH = get_env("INTEL_DB_PATH", "./data/vectis_intel.db")
 WATCHLIST_PATH = get_env("WATCHLIST_PATH", "./config/watchlists.json")
+TAXONOMY_PATH = get_env("TAXONOMY_PATH", "")
 SAM_GOV_API_KEY = get_env("SAM_GOV_API_KEY", "")
 LOG_LEVEL = get_env("LOG_LEVEL", "INFO")
 LOG_JSON = get_env_bool("LOG_JSON", False)
@@ -42,6 +52,8 @@ server = Server("vectis-intel")
 # Global instances (initialized on startup)
 _store: IntelStore | None = None
 _watchlist_manager: WatchlistManager | None = None
+_taxonomy_manager: TaxonomyManager | None = None
+_community_schema_applied: bool = False
 
 
 def get_store() -> IntelStore:
@@ -64,6 +76,35 @@ def get_watchlist_manager() -> WatchlistManager:
 def get_watchlist() -> dict:
     """Get the current watchlist (with hot-reload check)."""
     return get_watchlist_manager().get()
+
+
+def _resolve_taxonomy_path() -> str:
+    """Find taxonomy.yaml — explicit env var, or default location."""
+    if TAXONOMY_PATH:
+        return TAXONOMY_PATH
+    # Default: alongside the community package
+    pkg_dir = Path(__file__).parent / "community" / "taxonomy.yaml"
+    return str(pkg_dir)
+
+
+def get_taxonomy_manager() -> TaxonomyManager:
+    """Get or create the TaxonomyManager instance."""
+    global _taxonomy_manager
+    if _taxonomy_manager is None:
+        _taxonomy_manager = TaxonomyManager(_resolve_taxonomy_path())
+        logger.info(f"Initialized TaxonomyManager at {_resolve_taxonomy_path()}")
+    return _taxonomy_manager
+
+
+def get_community_conn():
+    """Get a SQLite connection with community schema applied."""
+    global _community_schema_applied
+    store = get_store()
+    if not _community_schema_applied:
+        apply_community_schema(store.db.conn)
+        _community_schema_applied = True
+        logger.info("Community schema applied")
+    return store.db.conn
 
 
 @server.list_tools()
@@ -297,6 +338,93 @@ async def list_tools() -> list[Tool]:
                 "required": []
             }
         ),
+
+        # ─── COMMUNITY SCANNER ─────────────────────────────────────────
+        Tool(
+            name="community_ingest",
+            description="Run community thread ingestion from one or all sources (SN Community RSS, Reddit, Stack Overflow). Each source runs independently — one failure does not block others.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "enum": ["all", "sn_community", "reddit", "stackoverflow"],
+                        "default": "all",
+                        "description": "Which source to ingest from"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="community_score",
+            description="Run monthly composite scoring for all active clusters. Computes thread_count_norm, unsolved_rate, workaround_rate, commercial_rate, store_gap, and lane-weighted composite. Returns outlier slugs (top-N by raw thread_count × unsolved_rate).",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="community_digest",
+            description="Generate weekly ranked digest. Returns top clusters by composite score with deltas, outlier overrides, lane-agnostic content candidates, and uncategorized stats. This is the primary community intelligence output.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "digest_date": {
+                        "type": "string",
+                        "description": "ISO date (YYYY-MM-DD). Defaults to today."
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Number of top clusters to include"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="community_promote",
+            description="Promote a community cluster to the procurement pipeline. Creates Sources, Signals (COMMUNITY_DEMAND), Correlation (RECURRING_DEMAND), and Opportunity with full provenance chain. Human gate: calling this tool IS the human decision.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cluster_slug": {
+                        "type": "string",
+                        "description": "Cluster slug to promote (e.g., 'grc_evidence_collection')"
+                    },
+                    "digest_date": {
+                        "type": "string",
+                        "description": "Digest date that surfaced this cluster (YYYY-MM-DD)"
+                    },
+                    "n_threads": {
+                        "type": "integer",
+                        "default": 5,
+                        "description": "Number of top threads to promote (min 2)"
+                    }
+                },
+                "required": ["cluster_slug", "digest_date"]
+            }
+        ),
+        Tool(
+            name="community_status",
+            description="Community scanner status: cluster counts by lane, ingestion watermarks, uncategorized percentage, latest scoring date, and promotion audit.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="sync_taxonomy",
+            description="Sync taxonomy.yaml clusters to the signal_clusters table. Inserts new clusters, updates changed labels/lanes/weights, soft-deactivates removed clusters.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
     ]
 
 
@@ -339,6 +467,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await handle_agent_trust_report()
         elif name == "pipeline_summary":
             return await handle_pipeline_summary()
+
+        # Community Scanner
+        elif name == "community_ingest":
+            return await handle_community_ingest(arguments)
+        elif name == "community_score":
+            return await handle_community_score()
+        elif name == "community_digest":
+            return await handle_community_digest(arguments)
+        elif name == "community_promote":
+            return await handle_community_promote(arguments)
+        elif name == "community_status":
+            return await handle_community_status()
+        elif name == "sync_taxonomy":
+            return await handle_sync_taxonomy()
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -840,6 +982,194 @@ async def handle_pipeline_summary() -> list[TextContent]:
     store = get_store()
     summary = store.opportunities.pipeline_summary()
     return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+
+
+# ─── COMMUNITY SCANNER HANDLERS ─────────────────────────────────────────────
+
+async def handle_community_ingest(args: dict) -> list[TextContent]:
+    """Run community thread ingestion."""
+    conn = get_community_conn()
+    taxonomy = get_taxonomy_manager()
+    source = args.get("source", "all")
+
+    results = {}
+
+    if source in ("all", "sn_community"):
+        try:
+            ingester = SNCommunityIngester(taxonomy)
+            r = await ingester.ingest(conn)
+            results["sn_community"] = {
+                "inserted": r.inserted, "updated": r.updated,
+                "skipped": r.skipped, "errors": r.errors,
+            }
+        except Exception as e:
+            logger.exception("SN Community ingestion failed")
+            results["sn_community"] = {"error": str(e)}
+
+    if source in ("all", "reddit"):
+        try:
+            ingester = RedditIngester(taxonomy)
+            r = await ingester.ingest(conn)
+            results["reddit"] = {
+                "inserted": r.inserted, "updated": r.updated,
+                "skipped": r.skipped, "errors": r.errors,
+            }
+        except Exception as e:
+            logger.exception("Reddit ingestion failed")
+            results["reddit"] = {"error": str(e)}
+
+    if source in ("all", "stackoverflow"):
+        try:
+            ingester = StackOverflowIngester(taxonomy)
+            r = await ingester.ingest(conn)
+            results["stackoverflow"] = {
+                "inserted": r.inserted, "updated": r.updated,
+                "skipped": r.skipped, "errors": r.errors,
+            }
+        except Exception as e:
+            logger.exception("Stack Overflow ingestion failed")
+            results["stackoverflow"] = {"error": str(e)}
+
+    response = {
+        "ingestion_completed": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "results": results,
+    }
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
+
+
+async def handle_community_score() -> list[TextContent]:
+    """Run monthly scoring for all active clusters."""
+    conn = get_community_conn()
+    taxonomy = get_taxonomy_manager()
+
+    result = score_clusters(conn, taxonomy)
+    response = {
+        "scoring_completed": datetime.now(timezone.utc).isoformat(),
+        "scored": result["scored"],
+        "skipped_empty": result["skipped_empty"],
+        "window": {"start": result["window"][0], "end": result["window"][1]},
+        "outlier_slugs": result.get("outlier_slugs", []),
+    }
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
+
+
+async def handle_community_digest(args: dict) -> list[TextContent]:
+    """Generate weekly community digest."""
+    conn = get_community_conn()
+    taxonomy = get_taxonomy_manager()
+
+    digest_date = args.get("digest_date")
+    top_n = args.get("top_n", 10)
+
+    digest = generate_digest(conn, taxonomy, digest_date=digest_date, top_n=top_n)
+    return [TextContent(type="text", text=json.dumps(digest, indent=2))]
+
+
+async def handle_community_promote(args: dict) -> list[TextContent]:
+    """Promote a cluster to the procurement pipeline."""
+    conn = get_community_conn()
+    store = get_store()
+
+    cluster_slug = args.get("cluster_slug")
+    digest_date = args.get("digest_date")
+    n_threads = args.get("n_threads", 5)
+
+    if not cluster_slug or not digest_date:
+        return [TextContent(type="text", text=json.dumps({
+            "error": "cluster_slug and digest_date are required"
+        }, indent=2))]
+
+    try:
+        result = promote_cluster(conn, store, cluster_slug, digest_date, n_threads=n_threads)
+        response = {
+            "promoted": True,
+            "cluster_slug": cluster_slug,
+            "opportunity_id": result["opportunity_id"],
+            "correlation_id": result["correlation_id"],
+            "signals_created": result["signals_created"],
+            "sources_reused": result["sources_reused"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except PromotionError as e:
+        response = {"promoted": False, "error": str(e)}
+
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
+
+
+async def handle_community_status() -> list[TextContent]:
+    """Community scanner status overview."""
+    conn = get_community_conn()
+    store = get_store()
+
+    # Cluster counts by lane
+    lane_counts = conn.execute(
+        """SELECT lane, COUNT(*) as count, SUM(active) as active
+           FROM signal_clusters GROUP BY lane"""
+    ).fetchall()
+
+    # Total community signals
+    total_signals = conn.execute(
+        "SELECT COUNT(*) as cnt FROM community_signals"
+    ).fetchone()["cnt"]
+
+    # Uncategorized count
+    uncat = conn.execute(
+        "SELECT COUNT(*) as cnt FROM community_signals WHERE cluster_id IS NULL"
+    ).fetchone()["cnt"]
+
+    # Ingestion watermarks
+    watermarks = conn.execute(
+        "SELECT source, last_id, last_posted, updated_at FROM ingest_state"
+    ).fetchall()
+
+    # Latest scoring date
+    latest_score = conn.execute(
+        "SELECT MAX(scored_at) as latest FROM cluster_scores"
+    ).fetchone()
+
+    # Promotion audit
+    audit = audit_promotions(conn, store)
+
+    response = {
+        "clusters_by_lane": {
+            r["lane"]: {"total": r["count"], "active": r["active"]}
+            for r in lane_counts
+        },
+        "signals": {
+            "total": total_signals,
+            "uncategorized": uncat,
+            "uncategorized_pct": round(uncat / total_signals * 100, 1) if total_signals > 0 else 0,
+        },
+        "ingestion_watermarks": {
+            r["source"]: {
+                "last_id": r["last_id"],
+                "last_posted": r["last_posted"],
+                "updated_at": r["updated_at"],
+            }
+            for r in watermarks
+        },
+        "latest_scoring": latest_score["latest"] if latest_score else None,
+        "promotion_audit": audit,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
+
+
+async def handle_sync_taxonomy() -> list[TextContent]:
+    """Sync taxonomy.yaml to signal_clusters table."""
+    conn = get_community_conn()
+    taxonomy = get_taxonomy_manager()
+
+    result = sync_taxonomy(conn, taxonomy)
+    response = {
+        "synced": True,
+        "inserted": result["inserted"],
+        "updated": result["updated"],
+        "deactivated": result["deactivated"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    return [TextContent(type="text", text=json.dumps(response, indent=2))]
 
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────

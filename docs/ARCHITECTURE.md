@@ -23,7 +23,7 @@ Vigil is an MCP (Model Context Protocol) server that monitors federal procuremen
 ┌───────────────────────────▼─────────────────────────────────┐
 │                    MCP Server (server.py)                    │
 │                                                             │
-│   12 tools: scan, query, audit, trace                       │
+│   18 tools: scan, query, audit, trace, community            │
 │   Hot-reload config │ Structured logging                    │
 └──────┬──────────┬──────────┬──────────┬─────────────────────┘
        │          │          │          │
@@ -52,7 +52,7 @@ Vigil is an MCP (Model Context Protocol) server that monitors federal procuremen
 
 ### 1. MCP Server (`server.py`)
 
-Entry point. Registers 12 tools across 5 categories:
+Entry point. Registers 18 tools across 6 categories:
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
@@ -61,6 +61,7 @@ Entry point. Registers 12 tools across 5 categories:
 | Awards | `scan_awards`, `search_competitor_awards` | USAspending contract monitoring |
 | Queries | `list_signals`, `trace_evidence`, `list_stale_signals` | Evidence chain traversal |
 | Analytics | `integrity_audit`, `agent_trust_report`, `pipeline_summary` | System health and pipeline views |
+| Community | `community_ingest`, `community_score`, `community_digest`, `community_promote`, `community_status`, `sync_taxonomy` | Community scanner pipeline |
 
 **Configuration** (environment variables):
 
@@ -69,6 +70,7 @@ Entry point. Registers 12 tools across 5 categories:
 | `SAM_GOV_API_KEY` | `""` | SAM.gov API key |
 | `INTEL_DB_PATH` | `./data/vectis_intel.db` | SQLite database path |
 | `WATCHLIST_PATH` | `./config/watchlists.json` | Watchlist config |
+| `TAXONOMY_PATH` | `(auto-detected)` | Community taxonomy YAML path |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `LOG_JSON` | `false` | Structured JSON logging |
 
