@@ -18,7 +18,7 @@ Modules:
 from .schema import apply_community_schema
 from .config import TaxonomyManager
 from .classify import classify, has_large_code_block, count_commercial_hits, reclassify_all
-from .score import score_clusters, update_store_gap
+from .score import score_clusters, update_store_gap, get_outlier_slugs
 from .digest import generate_digest
 from .sync_taxonomy import sync_taxonomy
 
@@ -31,6 +31,7 @@ __all__ = [
     "reclassify_all",
     "score_clusters",
     "update_store_gap",
+    "get_outlier_slugs",
     "generate_digest",
     "sync_taxonomy",
 ]

@@ -86,3 +86,23 @@ class TaxonomyManager:
     @property
     def window_months(self) -> int:
         return self.config.get("window_months", 12)
+
+    @property
+    def outlier_override(self) -> dict:
+        return self.config.get("outlier_override", {"top_n": 3})
+
+    @property
+    def outlier_top_n(self) -> int:
+        return self.outlier_override.get("top_n", 3)
+
+    @property
+    def content_candidate_config(self) -> dict:
+        return self.config.get("content_candidate", {"min_views": 1000, "require_unsolved": True})
+
+    @property
+    def content_min_views(self) -> int:
+        return self.content_candidate_config.get("min_views", 1000)
+
+    @property
+    def content_require_unsolved(self) -> bool:
+        return self.content_candidate_config.get("require_unsolved", True)

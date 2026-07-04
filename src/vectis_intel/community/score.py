@@ -12,6 +12,12 @@ Factors:
   commercial_rate    = threads with commercial_hits > 0 / total
   store_gap_score    = from vigil-store-crossref (NULL → 0.5, never 1.0)
 
+v1.1 scoring scope rules:
+  - Lane weights apply to app_candidate ranking only
+  - Outlier override: top-N by raw thread_count × unsolved_rate always
+    surface in digest regardless of lane-weighted rank
+  - Content-candidate flagging is lane-agnostic (min_views + unsolved)
+
 Weights from taxonomy.yaml config. Appends to cluster_scores (never overwrites).
 """
 
@@ -157,9 +163,53 @@ def score_clusters(
         scored += 1
 
     conn.commit()
-    result = {"scored": scored, "skipped_empty": skipped_empty, "window": (window_start, window_end)}
+
+    # Compute outlier overrides: top-N by raw thread_count × unsolved_rate (no lane weight)
+    outlier_top_n = taxonomy.outlier_top_n
+    outlier_candidates = []
+    for cluster in clusters:
+        cid = cluster["id"]
+        stats = cluster_stats.get(cid)
+        if stats is None:
+            continue
+        raw_metric = stats["thread_count"] * stats["unsolved_rate"]
+        outlier_candidates.append((cluster["slug"], raw_metric))
+
+    outlier_candidates.sort(key=lambda x: x[1], reverse=True)
+    outlier_slugs = [slug for slug, _ in outlier_candidates[:outlier_top_n]]
+
+    result = {
+        "scored": scored,
+        "skipped_empty": skipped_empty,
+        "window": (window_start, window_end),
+        "outlier_slugs": outlier_slugs,
+    }
     logger.info(f"Scoring complete: {result}")
     return result
+
+
+def get_outlier_slugs(
+    conn: sqlite3.Connection,
+    top_n: int = 3,
+) -> list[str]:
+    """
+    Get top-N clusters by raw thread_count × unsolved_rate from latest scores.
+    These clusters surface in the digest regardless of lane-weighted rank.
+    """
+    rows = conn.execute(
+        """SELECT sc.slug, cs.thread_count, cs.unsolved_rate
+           FROM cluster_scores cs
+           JOIN signal_clusters sc ON sc.id = cs.cluster_id
+           WHERE sc.active = 1
+             AND cs.scored_at = (
+                 SELECT MAX(cs2.scored_at) FROM cluster_scores cs2
+                 WHERE cs2.cluster_id = cs.cluster_id
+             )
+           ORDER BY (cs.thread_count * cs.unsolved_rate) DESC
+           LIMIT ?""",
+        (top_n,),
+    ).fetchall()
+    return [r["slug"] for r in rows]
 
 
 def update_store_gap(

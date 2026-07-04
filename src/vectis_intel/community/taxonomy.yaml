@@ -1,9 +1,17 @@
-# Community Scanner taxonomy — v1
-# Deterministic keyword classification. No embeddings in v1 by design:
-# you know this domain; a hand-built map is debuggable and honest about
-# what it knows. The `uncategorized` pile is itself a signal — review it
-# monthly. If it grows past ~20% of ingested threads, that's the trigger
-# to evaluate embeddings for v2, not before.
+# Community Scanner taxonomy — v1.1
+# Deterministic keyword classification. No embeddings in v1 by design.
+# The `uncategorized` pile is itself a signal — review monthly; if it
+# grows past ~20% of ingested threads, that triggers embeddings for v2.
+#
+# v1.1 changes:
+#   - Full-platform cluster coverage (25 clusters, was 15 GRC-heavy)
+#   - Lane weights rebalanced: weights encode PRICING POWER + COMPETITION,
+#     not founder knowledge. Compressed from 1.5/0.3 because plugin-factory
+#     economics (NowForge) lower per-app build cost, making lower-moat
+#     swings viable.
+#   - outlier_override: raw-frequency outliers surface regardless of lane
+#   - Lane weights apply to app_candidate ranking ONLY. Content-candidate
+#     flagging is lane-agnostic (Gotcha Journal principle is platform-wide).
 #
 # Matching rule (implement in classifier):
 #   - case-insensitive substring match against title + body
@@ -13,9 +21,9 @@
 
 config:
   min_keyword_hits: 2
-  large_code_block_lines: 30        # threshold for has_large_code_block
+  large_code_block_lines: 30
   window_months: 12
-  commercial_keywords:              # counted into commercial_hits at ingest
+  commercial_keywords:
     - consultant
     - "quoted us"
     - quote
@@ -26,21 +34,29 @@ config:
     - partner charges
     - statement of work
     - "paid solution"
-  scoring_weights:                  # composite = weighted sum, then × lane_weight
-    thread_count_norm: 0.30         # normalized against max cluster in window
+  scoring_weights:                  # composite = lane_weight × weighted sum
+    thread_count_norm: 0.30
     unsolved_rate:     0.20
     workaround_rate:   0.20
     commercial_rate:   0.15
-    store_gap_score:   0.15         # treat NULL as 0.5 (unknown), never as 1.0
+    store_gap_score:   0.15         # NULL -> 0.5 (unknown ≠ opportunity)
+  outlier_override:                 # detection safety net vs. lane suppression
+    metric: thread_count_x_unsolved # thread_count * unsolved_rate, raw (no lane weight)
+    top_n: 3                        # top 3 by this metric ALWAYS surface in digest
+  content_candidate:                # lane-agnostic — SEO value ignores portfolio fit
+    min_views: 1000
+    require_unsolved: true
 
-lanes:
-  grc:              { weight: 1.5 }
-  platform_utility: { weight: 1.0 }
-  itsm:             { weight: 0.3 }
-  other:            { weight: 0.5 }
+lanes:                              # premiums reflect price points + competition, not knowledge
+  grc:              { weight: 1.3 } # $500-2000/mo apps, near-zero Store competition
+  secops:           { weight: 1.0 } # planned knowledge pack, moderate competition
+  platform_utility: { weight: 1.0 } # $200-1000/mo apps, contestable but broad demand
+  hrsd:             { weight: 0.9 } # planned knowledge pack, less founder track record
+  itsm:             { weight: 0.7 } # saturated Store category; frequency must overcome
+  other:            { weight: 0.6 }
 
 clusters:
-  # ── GRC lane ──────────────────────────────────────────────
+  # ── GRC ───────────────────────────────────────────────────
   - slug: grc_evidence_collection
     label: GRC Evidence Collection & Requests
     lane: grc
@@ -49,7 +65,7 @@ clusters:
   - slug: grc_control_testing
     label: Control Test Management
     lane: grc
-    keywords: [control test, test plan, control assessment, indicator, continuous monitoring, sn_compliance]
+    keywords: [control test, test plan, control assessment, indicator template, continuous monitoring, sn_compliance]
 
   - slug: grc_audit_engagement
     label: Audit Engagement Workflow
@@ -76,7 +92,7 @@ clusters:
     lane: grc
     keywords: [oscal, ssp export, fedramp package, machine readable, 800-53 export, component definition]
 
-  # ── Platform utility lane ─────────────────────────────────
+  # ── Platform utility ──────────────────────────────────────
   - slug: clone_management
     label: Clone Exclusions & Data Preservation
     lane: platform_utility
@@ -112,7 +128,59 @@ clusters:
     lane: platform_utility
     keywords: [scoped application, cross-scope, application scope, scope access, x_ prefix, restricted caller access]
 
-  # ── ITSM lane (deliberately low weight — saturated) ───────
+  - slug: flow_designer_pain
+    label: Flow Designer Errors & Limits
+    lane: platform_utility
+    keywords: [flow designer, subflow, flow error, flow variables, integrationhub spoke, action error, flow trigger]
+
+  - slug: notifications_email
+    label: Notification & Email Delivery
+    lane: platform_utility
+    keywords: [email notification, notification not sending, mail script, email script, watermark, notification digest]
+
+  - slug: service_portal_uib
+    label: Service Portal / UI Builder / Workspaces
+    lane: platform_utility
+    keywords: [service portal widget, ui builder, workspace, macroponent, portal page, client controller, ux page]
+
+  - slug: integrations_rest
+    label: Integrations, REST & MID Server
+    lane: platform_utility
+    keywords: [rest message, outbound rest, mid server, integration user, oauth token, web service, soap]
+
+  - slug: performance_tuning
+    label: Instance Performance & Large Tables
+    lane: platform_utility
+    keywords: [slow query, performance issue, table rotation, large table, sys_audit growth, database view, query optimization]
+
+  - slug: upgrade_release
+    label: Upgrades, Patching & Deprecations
+    lane: platform_utility
+    keywords: [upgrade, patch, family release, deprecated, skipped during upgrade, upgrade monitor, release migration]
+
+  - slug: cmdb_data_quality
+    label: CMDB Data Quality & Identification
+    lane: platform_utility
+    keywords: [cmdb, ci class, identification rule, reconciliation, duplicate ci, ire, dependent ci]
+
+  - slug: reporting_analytics
+    label: Reporting & Performance Analytics
+    lane: platform_utility
+    keywords: [performance analytics, indicator, breakdown, scheduled report, dashboard tab, report source]
+
+  # ── SecOps ────────────────────────────────────────────────
+  - slug: secops_vr_sir
+    label: Security Incident & Vulnerability Response
+    lane: secops
+    keywords: [security incident, vulnerability response, sir record, vulnerability group, cve, vulnerable item]
+
+  # ── HRSD ──────────────────────────────────────────────────
+  - slug: hrsd_case_mgmt
+    label: HR Case & Lifecycle Management
+    lane: hrsd
+    keywords: [hr case, employee center, lifecycle event, hr service, coe configuration, hr criteria]
+
+  # ── ITSM ──────────────────────────────────────────────────
   - slug: itsm_workflow
     label: ITSM Workflow & SLA
     lane: itsm

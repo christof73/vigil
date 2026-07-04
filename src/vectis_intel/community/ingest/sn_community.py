@@ -4,10 +4,14 @@ Community Scanner — ServiceNow Community Ingester
 Khoros RSS feed per board. This is the GO/NO-GO gate:
 if RSS is unavailable, STOP and surface the decision.
 
-Target boards:
+Target boards (v1.1 — full platform coverage):
   - Developer
-  - GRC/IRM
   - Platform Administration
+  - GRC/IRM
+  - ITSM
+  - Now Platform
+  - HRSD
+  - SecOps
 """
 
 import logging
@@ -27,10 +31,16 @@ logger = logging.getLogger("vectis_intel.community.ingest.sn_community")
 
 # Khoros RSS feed URL pattern — board ID is the variable part
 # These need verification before first run (GO/NO-GO gate)
+# Full-platform coverage per v1.1 spec — exact board IDs [VERIFY] against
+# current community structure before production run
 BOARD_FEEDS = {
     "developer": "https://community.servicenow.com/community/feeds/board?board.id=developer-forum",
-    "grc-irm": "https://community.servicenow.com/community/feeds/board?board.id=grc-irm",
     "platform-admin": "https://community.servicenow.com/community/feeds/board?board.id=platform-administration",
+    "grc-irm": "https://community.servicenow.com/community/feeds/board?board.id=grc-irm",
+    "itsm": "https://community.servicenow.com/community/feeds/board?board.id=itsm",
+    "now-platform": "https://community.servicenow.com/community/feeds/board?board.id=now-platform",
+    "hrsd": "https://community.servicenow.com/community/feeds/board?board.id=hrsd",
+    "secops": "https://community.servicenow.com/community/feeds/board?board.id=secops",
 }
 
 

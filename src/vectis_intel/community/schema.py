@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS signal_clusters (
     id          INTEGER PRIMARY KEY,
     slug        TEXT    NOT NULL UNIQUE,
     label       TEXT    NOT NULL,
-    lane        TEXT    NOT NULL CHECK (lane IN ('grc', 'platform_utility', 'itsm', 'other')),
+    lane        TEXT    NOT NULL CHECK (lane IN ('grc', 'platform_utility', 'secops', 'hrsd', 'itsm', 'other')),
     lane_weight REAL    NOT NULL DEFAULT 1.0,
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
