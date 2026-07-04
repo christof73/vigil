@@ -21,6 +21,7 @@ from .classify import classify, has_large_code_block, count_commercial_hits, rec
 from .score import score_clusters, update_store_gap, get_outlier_slugs
 from .digest import generate_digest
 from .sync_taxonomy import sync_taxonomy
+from .promote import promote_cluster, audit_promotions, PromotionError
 
 __all__ = [
     "apply_community_schema",
@@ -34,4 +35,7 @@ __all__ = [
     "get_outlier_slugs",
     "generate_digest",
     "sync_taxonomy",
+    "promote_cluster",
+    "audit_promotions",
+    "PromotionError",
 ]

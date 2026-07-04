@@ -94,6 +94,27 @@ CREATE TABLE IF NOT EXISTS ingest_state (
     last_posted TEXT,
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+-- ─────────────────────────────────────────────────────────────
+-- Cluster promotion audit table. Bridges community pipeline
+-- (clusters/digests) to procurement pipeline (correlations/
+-- opportunities). Core tables untouched by design.
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS cluster_promotions (
+    id               INTEGER PRIMARY KEY,
+    cluster_id       INTEGER NOT NULL REFERENCES signal_clusters(id) ON DELETE RESTRICT,
+    digest_date      TEXT    NOT NULL,
+    score_snapshot_id INTEGER NOT NULL REFERENCES cluster_scores(id) ON DELETE RESTRICT,
+    correlation_id   TEXT    NOT NULL,
+    opportunity_id   TEXT    NOT NULL,
+    thread_signal_ids TEXT   NOT NULL,
+    n_threads        INTEGER NOT NULL CHECK (n_threads >= 2),
+    promoted_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    promoted_by      TEXT    NOT NULL DEFAULT 'human' CHECK (promoted_by = 'human')
+);
+
+CREATE INDEX IF NOT EXISTS idx_promotions_cluster ON cluster_promotions(cluster_id, promoted_at);
+CREATE INDEX IF NOT EXISTS idx_promotions_opp     ON cluster_promotions(opportunity_id);
 """
 
 

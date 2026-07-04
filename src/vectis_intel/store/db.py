@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS signals (
     signal_type          TEXT NOT NULL CHECK (signal_type IN (
         'rfp_posted','contract_awarded','job_posted','leadership_change',
         'product_release','partnership_announced','hiring_velocity',
-        'content_theme','tech_adoption','budget_signal','org_restructure'
+        'content_theme','tech_adoption','budget_signal','org_restructure',
+        'community_demand'
     )),
     summary              TEXT NOT NULL,
     entity_refs          TEXT,  -- JSON array
@@ -71,7 +72,7 @@ CREATE TABLE IF NOT EXISTS correlations (
     signal_ids       TEXT NOT NULL,  -- JSON array (min 2)
     correlation_type TEXT NOT NULL CHECK (correlation_type IN (
         'temporal_cluster','entity_overlap','domain_convergence',
-        'causal_hypothesis','contradictory'
+        'causal_hypothesis','contradictory','recurring_demand'
     )),
     hypothesis       TEXT NOT NULL,
     strength         TEXT NOT NULL CHECK (strength IN ('strong','moderate','weak')),

@@ -54,6 +54,7 @@ class SignalType(str, Enum):
     TECH_ADOPTION = "tech_adoption"
     BUDGET_SIGNAL = "budget_signal"
     ORG_RESTRUCTURE = "org_restructure"
+    COMMUNITY_DEMAND = "community_demand"
 
 
 class Confidence(str, Enum):
@@ -68,6 +69,7 @@ class CorrelationType(str, Enum):
     DOMAIN_CONVERGENCE = "domain_convergence"
     CAUSAL_HYPOTHESIS = "causal_hypothesis"
     CONTRADICTORY = "contradictory"
+    RECURRING_DEMAND = "recurring_demand"
 
 
 class CorrelationStrength(str, Enum):
